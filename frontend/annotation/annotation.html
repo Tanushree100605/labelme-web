@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LabelMe Web</title>
+    <link rel="stylesheet" href="annotation.css">
+</head>
+
+<body>
+
+    <!-- =========================
+         HEADER
+    ========================== -->
+
+    <header>
+
+        <h2>LabelMe Web</h2>
+
+    </header>
+
+    <!-- =========================
+         TOOLBAR
+    ========================== -->
+
+    <div class="toolbar">
+
+    <button id="loadFolderBtn">Load Folder</button>
+
+    <label>Format</label>
+
+    <select id="formatSelect">
+        <option value="coco">COCO JSON</option>
+        <option value="pascal">Pascal VOC XML</option>
+        <option value="yolo">YOLO TXT</option>
+    </select>
+
+    <label>Label</label>
+
+    <select id="labelSelect">
+        <option>Person</option>
+        <option>Machine</option>
+        <option>Bag</option>
+    </select>
+
+    <button id="saveBtn">Save</button>
+    <button id="deleteBtn">Delete</button>
+
+</div>
+
+<input
+    type="file"
+    id="folderInput"
+    webkitdirectory
+    multiple
+    accept="image/*"
+    style="display:none;">
+
+    <!-- =========================
+         MAIN LAYOUT
+    ========================== -->
+
+    <div class="main-container">
+
+        <!-- LEFT SIDEBAR -->
+
+        <div class="left-panel">
+
+            <h3>Images</h3>
+
+            <ul id="imageList">
+
+                <li data-image="sample.jpg" onclick="loadImage('sample.jpg')">sample.jpg</li>
+                <li data-image="sample2.jpg" onclick="loadImage('sample2.jpg')">sample2.jpg</li>
+                <li data-image="sample3.jpg" onclick="loadImage('sample3.jpg')">sample3.jpg</li>
+                </li>
+
+            </ul>
+
+        </div>
+
+        <!-- CENTER -->
+
+        <div class="center-panel">
+
+            <canvas id="canvas"></canvas>
+
+        </div>
+
+        <!-- RIGHT SIDEBAR -->
+
+        <div class="right-panel">
+
+            <h3>Classes</h3>
+
+            <ul id="classList">
+
+                <li>Person</li>
+
+                <li>Machine</li>
+
+                <li>Bag</li>
+
+            </ul>
+
+            <button id="newClassBtn">
+                + Add Class
+            </button>
+
+        </div>
+
+    </div>
+
+    <script src="annotation.js"></script>
+
+</body>
+
+</html>
+
