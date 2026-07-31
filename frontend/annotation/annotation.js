@@ -1,4 +1,15 @@
 // ==============================
+// Backend connection
+// ==============================
+
+// backend runs on port 8000, see backend/README.md
+const API_BASE = "http://localhost:8000/api";
+
+let sessionId = null;
+let currentFormat = null; // "coco" | "voc" | "yolo" - locked once folder is opened
+let classes = []; // [{id, name}] - kept in sync with backend
+
+// ==============================
 // Canvas Setup
 // ==============================
 
@@ -21,21 +32,80 @@ let isDrawing = false;
 let annotations = [];
 let selectedBox = -1;
 
-// Stores annotations for every image
+// Stores annotations for every image (keyed by image name now, not blob url)
 let imageAnnotations = {};
 
 // Currently opened image
 let currentImage = "";
 let scale = 1;
+
+// ==============================
+// small helpers
+// ==============================
+
+function classIdForLabel(label) {
+    const found = classes.find((c) => c.name === label);
+    return found ? found.id : null;
+}
+
+function labelForClassId(id) {
+    const found = classes.find((c) => c.id === id);
+    return found ? found.name : "unknown";
+}
+
+function imageUrlFor(name) {
+    return API_BASE + "/folders/" + encodeURIComponent(sessionId) + "/images/" + encodeURIComponent(name) + "/file";
+}
+
+// pushes the whole class list to the backend, called whenever classes change
+async function syncClassesToBackend() {
+    if (!sessionId) return;
+    await fetch(API_BASE + "/folders/" + encodeURIComponent(sessionId) + "/classes", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ classes: classes }),
+    });
+}
+
+// saves whatever is currently in `annotations` for `currentImage` to the backend
+async function saveCurrentImageToBackend() {
+    if (!sessionId || currentImage === "") return;
+
+    const boxes = annotations.map((box, i) => ({
+        id: i + 1,
+        classId: classIdForLabel(box.label),
+        x: box.x,
+        y: box.y,
+        w: box.width,
+        h: box.height,
+    }));
+
+    const res = await fetch(
+        API_BASE + "/folders/" + encodeURIComponent(sessionId) + "/annotations/" + encodeURIComponent(currentImage),
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ boxes: boxes }),
+        }
+    );
+
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.log("save failed:", err.message);
+        alert("Could not save annotation: " + (err.message || "unknown error"));
+    }
+}
+
 // ==============================
 // Load Image
 // ==============================
 
 function loadImage(filename) {
 
-    // Save annotations of previous image
+    // Save annotations of previous image (both locally and to backend)
     if (currentImage !== "") {
         imageAnnotations[currentImage] = [...annotations];
+        saveCurrentImageToBackend();
     }
 
     currentImage = filename;
@@ -70,7 +140,7 @@ function loadImage(filename) {
         redraw();
     };
 
-    image.src = filename;
+    image.src = imageUrlFor(filename);
 }
 
 canvas.addEventListener("mousedown", function (e) {
@@ -129,17 +199,24 @@ canvas.addEventListener("mouseup", function () {
 
     const label = document.getElementById("labelSelect").value;
 
+    if (!label) {
+        alert("Add a class first.");
+        redraw();
+        return;
+    }
+
     annotations.push({
          label: label,
           x: startX / scale,
           y: startY / scale,
           width: width / scale,
           height: height / scale
-        
+
         });
 
-    // Save annotations for current image
+    // Save annotations for current image (locally + backend)
     imageAnnotations[currentImage] = [...annotations];
+    saveCurrentImageToBackend();
 
     selectedBox = annotations.length - 1;
 
@@ -229,14 +306,16 @@ function redraw() {
 
 }
 
-// Load first image
-loadImage("sample.jpg");
-
 // ==============================
 // Add New Class
 // ==============================
 
 document.getElementById("newClassBtn").addEventListener("click", function () {
+
+    if (!sessionId) {
+        alert("Open a folder first.");
+        return;
+    }
 
     const className = prompt("Enter class name:");
 
@@ -277,6 +356,11 @@ document.getElementById("newClassBtn").addEventListener("click", function () {
     // Select the newly created class
     document.getElementById("labelSelect").value = newName;
 
+    // Track it for backend + assign it an id
+    const nextId = classes.length > 0 ? Math.max(...classes.map(c => c.id)) + 1 : 1;
+    classes.push({ id: nextId, name: newName });
+    syncClassesToBackend();
+
 });
 
 // ==============================
@@ -293,6 +377,7 @@ document.getElementById("deleteBtn").addEventListener("click", function () {
     annotations.splice(selectedBox, 1);
 
     imageAnnotations[currentImage] = [...annotations];
+    saveCurrentImageToBackend();
 
     selectedBox = -1;
 
@@ -304,51 +389,97 @@ document.getElementById("deleteBtn").addEventListener("click", function () {
 // Load Folder
 // ==============================
 
-const folderInput = document.getElementById("folderInput");
+document.getElementById("loadFolderBtn").addEventListener("click", async function () {
 
-document.getElementById("loadFolderBtn").addEventListener("click", function () {
+    const folderPath = prompt("Enter the path to the images folder (on the machine running the backend):");
+    if (folderPath === null || folderPath.trim() === "") return;
 
-    folderInput.click();
+    // format is only asked once, right here, and locked in for the whole folder
+    const formatSelect = document.getElementById("formatSelect");
+    const rawFormat = formatSelect.value; // "coco" | "pascal" | "yolo" (dropdown values)
+    const format = rawFormat === "pascal" ? "voc" : rawFormat; // backend calls it "voc"
 
-});
-
-folderInput.addEventListener("change", function (event) {
-
-    const files = Array.from(event.target.files);
-
-    const imageFiles = files.filter(file =>
-        file.type.startsWith("image/")
-    );
-
-    const imageList = document.getElementById("imageList");
-
-    imageList.innerHTML = "";
-
-    if (imageFiles.length === 0) {
-        alert("No images found.");
+    let res, data;
+    try {
+        res = await fetch(API_BASE + "/folders/open", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: folderPath.trim(), format: format }),
+        });
+        data = await res.json();
+    } catch (err) {
+        alert("Could not reach the backend. Is it running on " + API_BASE + " ?");
         return;
     }
 
-    imageFiles.forEach((file, index) => {
+    if (!res.ok) {
+        alert(data.message || "Could not open that folder.");
+        return;
+    }
 
-        const imageURL = URL.createObjectURL(file);
+    // lock the format dropdown now that a folder is open
+    formatSelect.disabled = true;
+
+    sessionId = data.sessionId;
+    currentFormat = data.format;
+    classes = data.classes || [];
+
+    // rebuild the class list UI + label dropdown from what the backend returned
+    const classListEl = document.getElementById("classList");
+    const labelSelectEl = document.getElementById("labelSelect");
+    classListEl.innerHTML = "";
+    labelSelectEl.innerHTML = "";
+
+    classes.forEach((c) => {
+        const li = document.createElement("li");
+        li.textContent = c.name;
+        classListEl.appendChild(li);
+
+        const option = document.createElement("option");
+        option.value = c.name;
+        option.textContent = c.name;
+        labelSelectEl.appendChild(option);
+    });
+
+    // rebuild imageAnnotations from whatever the backend already had saved on disk
+    imageAnnotations = {};
+    const annotationsByImage = data.annotations || {};
+    Object.keys(annotationsByImage).forEach((imgName) => {
+        imageAnnotations[imgName] = annotationsByImage[imgName].map((box) => ({
+            label: labelForClassId(box.classId),
+            x: box.x,
+            y: box.y,
+            width: box.w,
+            height: box.h,
+        }));
+    });
+
+    // populate the image list
+    const imageList = document.getElementById("imageList");
+    imageList.innerHTML = "";
+
+    const images = data.images || [];
+    if (images.length === 0) {
+        alert("No images found in that folder.");
+        return;
+    }
+
+    images.forEach((img, index) => {
 
         const li = document.createElement("li");
 
-        li.textContent = file.name;
-        li.dataset.image = imageURL;
+        li.textContent = img.name;
+        li.dataset.image = img.name;
 
         li.addEventListener("click", function () {
-
-            loadImage(imageURL);
-
+            loadImage(img.name);
         });
 
         imageList.appendChild(li);
 
-        // Load first image automatically
         if (index === 0) {
-            loadImage(imageURL);
+            currentImage = ""; // so loadImage doesn't try to save a non-existent previous image
+            loadImage(img.name);
         }
 
     });
@@ -361,165 +492,18 @@ folderInput.addEventListener("change", function (event) {
 
 document.getElementById("saveBtn").addEventListener("click", function () {
 
-    const format = document.getElementById("formatSelect").value;
+    if (!sessionId) {
+        alert("Open a folder first.");
+        return;
+    }
 
     if (annotations.length === 0) {
         alert("No annotations to save.");
         return;
     }
 
-    let content = "";
-    let fileName = "";
-
-    switch (format) {
-
-        case "coco":
-            content = exportCOCO();
-            fileName = "annotation.json";
-            break;
-
-        case "pascal":
-            content = exportPascal();
-            fileName = "annotation.xml";
-            break;
-
-        case "yolo":
-            content = exportYOLO();
-            fileName = "annotation.txt";
-            break;
-
-        default:
-            alert("Invalid format.");
-            return;
-    }
-
-    const blob = new Blob([content], {
-        type: "text/plain"
+    saveCurrentImageToBackend().then(() => {
+        alert("Saved to " + currentFormat + " format in the images folder.");
     });
-
-    const link = document.createElement("a");
-
-    link.href = URL.createObjectURL(blob);
-
-    link.download = fileName;
-
-    link.click();
 
 });
-
-function exportCOCO() {
-
-    const data = {
-        images: [
-            {
-                id: 1,
-                file_name: currentImage
-            }
-        ],
-        annotations: [],
-        categories: []
-    };
-
-    let categoryMap = {};
-    let categoryId = 1;
-
-    annotations.forEach((box, index) => {
-
-        if (!(box.label in categoryMap)) {
-
-            categoryMap[box.label] = categoryId;
-
-            data.categories.push({
-                id: categoryId,
-                name: box.label
-            });
-
-            categoryId++;
-
-        }
-
-        data.annotations.push({
-
-            id: index + 1,
-
-            image_id: 1,
-
-            category_id: categoryMap[box.label],
-
-            bbox: [
-
-                box.x,
-
-                box.y,
-
-                box.width,
-
-                box.height
-
-            ]
-
-        });
-
-    });
-
-    return JSON.stringify(data, null, 4);
-
-}
-
-function exportPascal() {
-
-    let xml = `<annotation>\n`;
-
-    xml += `<filename>${currentImage}</filename>\n`;
-
-    annotations.forEach(box => {
-
-        xml += `<object>\n`;
-
-        xml += `<name>${box.label}</name>\n`;
-
-        xml += `<bndbox>\n`;
-
-        xml += `<xmin>${box.x}</xmin>\n`;
-
-        xml += `<ymin>${box.y}</ymin>\n`;
-
-        xml += `<xmax>${box.x + box.width}</xmax>\n`;
-
-        xml += `<ymax>${box.y + box.height}</ymax>\n`;
-
-        xml += `</bndbox>\n`;
-
-        xml += `</object>\n`;
-
-    });
-
-    xml += `</annotation>`;
-
-    return xml;
-
-}
-
-
-function exportYOLO() {
-
-    let txt = "";
-
-    annotations.forEach(box => {
-
-        const xCenter = (box.x + box.width / 2) / canvas.width;
-
-        const yCenter = (box.y + box.height / 2) / canvas.height;
-
-        const width = box.width / canvas.width;
-
-        const height = box.height / canvas.height;
-
-        txt += `0 ${xCenter} ${yCenter} ${width} ${height}\n`;
-
-    });
-
-    return txt;
-
-}
-
